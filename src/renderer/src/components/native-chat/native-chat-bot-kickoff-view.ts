@@ -151,6 +151,8 @@ export function useNativeChatBotKickoffView(
   // Keyed by its words, so a new object for the same refusal keeps the first screen.
   const refusedReason = refusal?.reason ?? null
   const refusedDetail = refusal?.providerDetail
+  const refusedSignedOut = refusal?.notSignedIn !== undefined
+  const refusedAccount = refusal?.notSignedIn?.account
   const firstScreen = useMemo(
     () =>
       live
@@ -161,11 +163,15 @@ export function useNativeChatBotKickoffView(
               ? null
               : {
                   reason: refusedReason,
-                  ...(refusedDetail ? { providerDetail: refusedDetail } : {})
+                  ...(refusedDetail ? { providerDetail: refusedDetail } : {}),
+                  // The setup card offers this sign-in.
+                  ...(refusedSignedOut
+                    ? { notSignedIn: refusedAccount ? { account: refusedAccount } : {} }
+                    : {})
                 }
           )
         : null,
-    [live, messages, turnEnded, refusedReason, refusedDetail]
+    [live, messages, turnEnded, refusedReason, refusedDetail, refusedSignedOut, refusedAccount]
   )
   const firstKickoffId =
     messages.find((message) => message.orcaNotice === 'bot-created')?.id ?? null
