@@ -104,8 +104,9 @@ export function getUniqueLegacyCoordinatorHandle(
        WHERE t.run_id = ? AND t.created_by_terminal_handle IS NOT NULL
          AND t.created_at <= ?
          AND EXISTS(
+           -- \`+\`: probe by task (idx_dispatch_task); the run_id index scans a whole Run per task.
            SELECT 1 FROM dispatch_contexts d
-           WHERE d.task_id = t.id AND d.run_id = t.run_id
+           WHERE d.task_id = t.id AND +d.run_id = t.run_id
          )`
     )
     .all(adoption.adopted_at, runId, adoption.adopted_at) as {
@@ -115,29 +116,34 @@ export function getUniqueLegacyCoordinatorHandle(
     return null
   }
   const candidates = new Set(durableRows.map((row) => row.handle))
+  // The Run's legacy worker addresses, matched with IN rather than a join on ORed columns,
+  // so each arm probes messages by index instead of pairing every message with every Dispatch.
   const mailRows = this.db
     .prepare(
-      `SELECT m.to_handle AS handle
+      `WITH legacy(handle) AS (
+         SELECT assignee_handle FROM dispatch_contexts
+         WHERE run_id = ? AND contract_version = ? AND assignee_handle IS NOT NULL
+         UNION
+         SELECT 'dispatch:' || id FROM dispatch_contexts
+         WHERE run_id = ? AND contract_version = ?
+       )
+       SELECT m.to_handle AS handle
        FROM messages m
-       INNER JOIN dispatch_contexts d
-         ON d.run_id = m.run_id AND d.contract_version = ?
-        AND (m.from_handle = d.assignee_handle OR m.from_handle = 'dispatch:' || d.id)
        WHERE m.run_id = ? AND m.delivery_contract = 'legacy_direct'
-         AND m.created_at <= ?
+         AND m.created_at <= ? AND m.from_handle IN (SELECT handle FROM legacy)
        UNION
        SELECT m.from_handle AS handle
        FROM messages m
-       INNER JOIN dispatch_contexts d
-         ON d.run_id = m.run_id AND d.contract_version = ?
-        AND (m.to_handle = d.assignee_handle OR m.to_handle = 'dispatch:' || d.id)
        WHERE m.run_id = ? AND m.delivery_contract = 'legacy_direct'
-         AND m.created_at <= ?`
+         AND m.created_at <= ? AND m.to_handle IN (SELECT handle FROM legacy)`
     )
     .all(
+      runId,
+      LEGACY_CONTRACT_VERSION,
+      runId,
       LEGACY_CONTRACT_VERSION,
       runId,
       adoption.adopted_at,
-      LEGACY_CONTRACT_VERSION,
       runId,
       adoption.adopted_at
     ) as {
