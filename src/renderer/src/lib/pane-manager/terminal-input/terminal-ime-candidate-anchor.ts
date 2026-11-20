@@ -1,4 +1,4 @@
-import type { Terminal } from '@xterm/xterm'
+import type { IDisposable, Terminal } from '@xterm/xterm'
 import { resolveCursorAgentImeAnchor, type TerminalImeAnchor } from './terminal-ime-anchor'
 
 type ImeAnchorCellMetrics = {
@@ -10,7 +10,7 @@ type ImeAnchorCellMetrics = {
 
 type ImeAnchorStyleProperty = 'top' | 'left' | 'height' | 'lineHeight'
 
-/** OS candidate placement reads the focused textarea at compositionstart; correct xterm’s stale/hidden TUI cursor after its handlers. Keep compositionupdate correction for long CJK sequences, measuring public .xterm-screen bounds once per composition and skipping unchanged inline styles to avoid layout. Return the installed handler for disposal, or null before DOM open. */
+/** OS candidate placement reads the focused textarea at compositionstart; correct xterm’s stale/hidden TUI cursor after its handlers. Keep compositionupdate correction for long CJK sequences, and follow xterm renders while a Cursor Agent composition is active, measuring public .xterm-screen bounds once per composition and skipping unchanged inline styles to avoid layout. Return the installed handler for disposal, or null before DOM open. */
 export function installTerminalImeCandidateAnchor(terminal: Terminal): (() => void) | null {
   if (!terminal.element || !terminal.textarea) {
     return null
@@ -21,6 +21,7 @@ export function installTerminalImeCandidateAnchor(terminal: Terminal): (() => vo
   let metrics: ImeAnchorCellMetrics | null = null
   let deferredApply: number | null = null
   let cursorAgentSeen = false
+  let renderSubscription: IDisposable | null = null
 
   const measureCells = (): ImeAnchorCellMetrics | null => {
     if (!screenElement) {
@@ -100,10 +101,10 @@ export function installTerminalImeCandidateAnchor(terminal: Terminal): (() => vo
     if (!screenElement) {
       return
     }
-    // Measure once per composition to pick up zoom/font changes without layout on every update.
+    // Measure once per composition to pick up zoom/font changes without layout on every update or render.
     const staleMetrics =
       !metrics || metrics.cols !== terminal.cols || metrics.rows !== terminal.rows
-    if (event?.type !== 'compositionupdate' || staleMetrics) {
+    if (event?.type === 'compositionstart' || staleMetrics) {
       metrics = measureCells()
     }
     const cells = metrics
@@ -120,6 +121,8 @@ export function installTerminalImeCandidateAnchor(terminal: Terminal): (() => vo
       }
       return
     }
+    // xterm resets the preedit to the buffer cursor on every render; follow renders only while composing.
+    renderSubscription ??= terminal.onRender(reapplyAfterRender)
     // Re-queue after xterm's latest timer while keeping only one correction pending.
     if (deferredApply !== null) {
       window.clearTimeout(deferredApply)
@@ -137,6 +140,15 @@ export function installTerminalImeCandidateAnchor(terminal: Terminal): (() => vo
         applyAnchor(current.anchor.row, current.anchor.column, metrics, current.isCursorAgent)
       }
     }, 0)
+  }
+
+  const reapplyAfterRender = (): void => {
+    if (!compositionView?.classList.contains('active') || !textarea.isConnected) {
+      renderSubscription?.dispose()
+      renderSubscription = null
+      return
+    }
+    handler()
   }
 
   terminal.element.addEventListener('compositionstart', handler)
